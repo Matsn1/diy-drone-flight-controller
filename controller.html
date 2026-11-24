@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Drone FC</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;}
+  body{background:#0a0c0f;color:#c8d6e0;font-family:sans-serif;height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+  #topbar{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid #1e2d3a;background:#0d1117;}
+  #topbar .logo{font-size:13px;font-family:monospace;color:#4a9eca;letter-spacing:2px;}
+  #status-dot{width:8px;height:8px;border-radius:50%;background:#ff3b3b;display:inline-block;margin-right:6px;}
+  #status-dot.connected{background:#00e676;}
+  #status-text{font-size:12px;font-family:monospace;color:#6b8a9a;}
+  #arm-btn{padding:6px 18px;border:1px solid #ff3b3b;background:transparent;color:#ff3b3b;font-weight:700;font-size:13px;letter-spacing:1px;border-radius:4px;cursor:pointer;}
+  #arm-btn.armed{border-color:#00e676;color:#00e676;}
+  #telemetry{display:flex;justify-content:space-around;padding:6px 16px;background:#0d1117;border-bottom:1px solid #1e2d3a;}
+  .telem{text-align:center;}
+  .telem .label{font-size:10px;color:#4a6070;font-family:monospace;letter-spacing:1px;}
+  .telem .val{font-size:15px;font-weight:600;font-family:monospace;color:#7ecfff;}
+  #main{flex:1;display:flex;align-items:center;justify-content:space-between;padding:0 12px;gap:8px;}
+  .joy-area{display:flex;flex-direction:column;align-items:center;gap:8px;}
+  .joy-label{font-size:10px;color:#3a5060;font-family:monospace;letter-spacing:2px;}
+  .joy-wrap{position:relative;width:140px;height:140px;}
+  .joy-base{width:140px;height:140px;border-radius:50%;border:1.5px solid #1e3040;background:#0d1520;position:relative;}
+  .joy-thumb{width:44px;height:44px;border-radius:50%;background:#162030;border:2px solid #4a9eca;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);}
+  .joy-thumb.active{border-color:#7ecfff;background:#1a2a40;}
+  #center-panel{display:flex;flex-direction:column;align-items:center;gap:10px;min-width:90px;}
+  .mission-btn{width:82px;padding:8px 0;border:1px solid #1e3040;background:#0d1520;color:#6b9ab0;font-weight:600;font-size:12px;border-radius:6px;cursor:pointer;}
+  .mission-btn.active{border-color:#00e676;color:#00e676;}
+  #mission-status{font-size:9px;font-family:monospace;color:#3a5060;}
+  #bottombar{padding:6px 16px;border-top:1px solid #1e2d3a;background:#0d1117;display:flex;justify-content:space-between;font-size:10px;font-family:monospace;color:#2a4050;}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <span class="logo">DRONE-FC v1.0</span>
+  <span><span id="status-dot"></span><span id="status-text">DISCONNECTED</span></span>
+  <button id="arm-btn" onclick="toggleArm()">DISARM</button>
+</div>
+<div id="telemetry">
+  <div class="telem"><div class="label">ROLL</div><div class="val" id="t-roll">0</div></div>
+  <div class="telem"><div class="label">PITCH</div><div class="val" id="t-pitch">0</div></div>
+  <div class="telem"><div class="label">THR</div><div class="val" id="t-thr">0</div></div>
+  <div class="telem"><div class="label">YAW</div><div class="val" id="t-yaw">0</div></div>
+  <div class="telem"><div class="label">MISSION</div><div class="val" id="t-mission">--</div></div>
+</div>
+<div id="main">
+  <div class="joy-area"><div class="joy-label">THR / YAW</div>
+    <div class="joy-wrap"><div class="joy-base" id="leftBase"><div class="joy-thumb" id="leftThumb"></div></div></div></div>
+  <div id="center-panel">
+    <button class="mission-btn" id="btn-m1" onclick="setMission(1)">M1 ALT HOLD</button>
+    <button class="mission-btn" id="btn-m2" onclick="setMission(2)">M2 RACE</button>
+    <button class="mission-btn" id="btn-m3" onclick="setMission(3)">M3 VISION</button>
+    <div id="mission-status">MANUAL</div>
+  </div>
+  <div class="joy-area"><div class="joy-label">PITCH / ROLL</div>
+    <div class="joy-wrap"><div class="joy-base" id="rightBase"><div class="joy-thumb" id="rightThumb"></div></div></div></div>
+</div>
+<div id="bottombar"><span id="ch-display">CH1:1500 CH2:1500 CH3:1000 CH4:1500</span><span id="ws-log">ws://192.168.4.1:81</span></div>
+
+<script>
+  // Sends "roll,pitch,throttle,yaw,mission" (1000-2000 us) to the drone over WebSocket every 50 ms
+  var WS_URL = 'ws://192.168.4.1:81';
+  var ws = null, armed = false, mission = 0;
+  var missionNames = ['MANUAL','ALT HOLD','RACE','VISION'];
+  var ch = {roll:1500, pitch:1500, thr:1000, yaw:1500};
+
+  function connect() {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = function() {
+      document.getElementById('status-dot').classList.add('connected');
+      document.getElementById('status-text').textContent = 'CONNECTED';
+      document.getElementById('ws-log').textContent = 'LINK OK';
+    };
+    ws.onclose = function() {
+      document.getElementById('status-dot').classList.remove('connected');
+      document.getElementById('status-text').textContent = 'DISCONNECTED';
+      document.getElementById('ws-log').textContent = 'RECONNECTING...';
+      setTimeout(connect, 2000);
+    };
+    ws.onerror = function() { document.getElementById('ws-log').textContent = 'NO LINK'; };
+  }
+
+  function send() {
+    if (ws && ws.readyState === 1) ws.send(ch.roll+','+ch.pitch+','+ch.thr+','+ch.yaw+','+mission);
+    document.getElementById('ch-display').textContent = 'CH1:'+ch.roll+' CH2:'+ch.pitch+' CH3:'+ch.thr+' CH4:'+ch.yaw;
+    document.getElementById('t-roll').textContent = ch.roll;
+    document.getElementById('t-pitch').textContent = ch.pitch;
+    document.getElementById('t-thr').textContent = ch.thr;
+    document.getElementById('t-yaw').textContent = ch.yaw;
+  }
+
+  function toggleArm() {
+    armed = !armed;
+    var btn = document.getElementById('arm-btn');
+    if (armed) { btn.textContent = 'ARMED'; btn.classList.add('armed'); }
+    else {
+      btn.textContent = 'DISARM'; btn.classList.remove('armed');
+      ch = {roll:1500, pitch:1500, thr:1000, yaw:1500};
+      updateThumb('left', 0, 0); updateThumb('right', 0, 0); send();
+    }
+  }
+
+  function setMission(m) {
+    mission = (mission === m) ? 0 : m;
+    ['btn-m1','btn-m2','btn-m3'].forEach(function(id,i){ document.getElementById(id).classList.toggle('active', mission === i+1); });
+    document.getElementById('mission-status').textContent = missionNames[mission];
+    document.getElementById('t-mission').textContent = mission === 0 ? '--' : 'M'+mission;
+  }
+
+  function updateThumb(side, nx, ny) {
+    var thumb = document.getElementById(side+'Thumb'), base = document.getElementById(side+'Base');
+    var r = base.offsetWidth / 2, maxOff = r - 22;
+    thumb.style.left = (r + nx*maxOff) + 'px';
+    thumb.style.top  = (r + ny*maxOff) + 'px';
+  }
+
+  function setupJoy(baseId, side) {
+    var base = document.getElementById(baseId), thumb = document.getElementById(side+'Thumb');
+    var active = false, tid = null, r, cx, cy;
+    function start(ex, ey) {
+      active = true; thumb.classList.add('active');
+      var rect = base.getBoundingClientRect(); r = rect.width/2; cx = rect.left + r; cy = rect.top + r;
+      move(ex, ey);
+    }
+    function move(ex, ey) {
+      if (!active) return;
+      var dx = ex - cx, dy = ey - cy, dist = Math.sqrt(dx*dx + dy*dy), maxR = r - 22;
+      if (dist > maxR) { dx = dx/dist*maxR; dy = dy/dist*maxR; }
+      var nx = dx/maxR, ny = dy/maxR;
+      updateThumb(side, nx, ny);
+      if (side === 'left') {
+        ch.yaw = Math.round(1500 + nx*500);
+        ch.thr = armed ? Math.round(1500 - ny*500) : 1000;   // no throttle unless armed
+      } else {
+        ch.roll = Math.round(1500 + nx*500);
+        ch.pitch = Math.round(1500 - ny*500);
+      }
+      ['roll','pitch','thr','yaw'].forEach(function(k){ ch[k] = Math.min(2000, Math.max(1000, ch[k])); });
+      send();
+    }
+    function end() {
+      if (!active) return;
+      active = false; thumb.classList.remove('active');
+      if (side === 'right') { ch.roll = 1500; ch.pitch = 1500; updateThumb(side, 0, 0); }
+      else { ch.yaw = 1500; updateThumb(side, 0, -(ch.thr - 1500)/500); }   // throttle stays where it was left
+      send();
+    }
+    base.addEventListener('touchstart', function(e){ e.preventDefault(); var t = e.changedTouches[0]; tid = t.identifier; start(t.clientX, t.clientY); }, {passive:false});
+    document.addEventListener('touchmove', function(e){
+      for (var i=0;i<e.changedTouches.length;i++) if (e.changedTouches[i].identifier === tid) { e.preventDefault(); move(e.changedTouches[i].clientX, e.changedTouches[i].clientY); }
+    }, {passive:false});
+    document.addEventListener('touchend', function(e){
+      for (var i=0;i<e.changedTouches.length;i++) if (e.changedTouches[i].identifier === tid) end();
+    });
+    base.addEventListener('mousedown', function(e){ start(e.clientX, e.clientY); });
+    document.addEventListener('mousemove', function(e){ move(e.clientX, e.clientY); });
+    document.addEventListener('mouseup', end);
+  }
+
+  setupJoy('leftBase', 'left');
+  setupJoy('rightBase', 'right');
+  setInterval(send, 50);
+  connect();
+</script>
+</body>
+</html>
